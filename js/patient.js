@@ -15,7 +15,8 @@
     stats: {
       xp: parseInt(sessionStorage.getItem('patientXP')) || 0,
       level: parseInt(sessionStorage.getItem('patientLevel')) || 1,
-      nextLevelXp: 500
+      nextLevelXp: 500,
+      loginStreak: parseInt(localStorage.getItem(`login_streak_${sessionStorage.getItem('userId') || 'patient01'}`)) || 0
     },
     web3: {
       healBalance: 0,
@@ -28,7 +29,10 @@
       answer: null, 
       options: [], 
       streak: parseInt(sessionStorage.getItem('mathStreak')) || 0 
-    }
+    },
+    mathTasksCount: 0,
+    cameraTasks: { arm: 0, grip: 0, reaction: 0 },
+    hasTakenMeds: false
   };
 
   let detector = null, stream = null, rafId = null;
@@ -36,31 +40,111 @@
   async function init() {
     healscapeAuth.checkAuth('patient');
     if (state.isDarkMode) document.body.classList.add('dark-mode');
+    checkDailyLimits();
     try {
-      const [data, heal, sbts] = await Promise.all([
+      const [data, sbts] = await Promise.all([
         healscapeApi.getPatientData(state.patientId),
-        healscapeApi.getHEALBalance(state.patientId),
         healscapeApi.getSoulboundTokens(state.patientId)
       ]);
       state.history = data.history || [];
-      state.web3.healBalance = heal;
+      state.web3.healBalance = window.blockchain.getBalance();
       state.web3.sbtList = sbts;
     } catch(e) { console.error("Data load failed", e); }
     state.stats.nextLevelXp = state.stats.level * 500;
     generateMathQuiz();
+    checkDailyCheckIn();
     render();
   }
 
+  function checkDailyCheckIn() {
+    const lastDate = localStorage.getItem(`last_checkin_${state.patientId}`);
+    const todayStr = new Date().toISOString().split('T')[0];
+    
+    const yesterday = new Date();
+    yesterday.setDate(yesterday.getDate() - 1);
+    const yesterdayStr = yesterday.toISOString().split('T')[0];
+
+    state.canCheckIn = lastDate !== todayStr;
+    
+    if (state.canCheckIn && lastDate !== yesterdayStr) {
+      // 斷開連續了
+      state.stats.loginStreak = 0;
+      localStorage.setItem(`login_streak_${state.patientId}`, '0');
+    }
+  }
+
+  function checkDailyLimits() {
+    const today = new Date().toISOString().split('T')[0];
+    const lastDate = localStorage.getItem(`tasks_date_${state.patientId}`);
+    if (lastDate !== today) {
+      localStorage.setItem(`tasks_date_${state.patientId}`, today);
+      localStorage.setItem(`math_tasks_count_${state.patientId}`, '0');
+      localStorage.setItem(`task_count_arm_${state.patientId}`, '0');
+      localStorage.setItem(`task_count_grip_${state.patientId}`, '0');
+      localStorage.setItem(`task_count_reaction_${state.patientId}`, '0');
+      localStorage.setItem(`has_taken_meds_${state.patientId}`, 'false');
+    }
+    state.mathTasksCount = parseInt(localStorage.getItem(`math_tasks_count_${state.patientId}`)) || 0;
+    state.cameraTasks = {
+      arm: parseInt(localStorage.getItem(`task_count_arm_${state.patientId}`)) || 0,
+      grip: parseInt(localStorage.getItem(`task_count_grip_${state.patientId}`)) || 0,
+      reaction: parseInt(localStorage.getItem(`task_count_reaction_${state.patientId}`)) || 0
+    };
+    state.hasTakenMeds = localStorage.getItem(`has_taken_meds_${state.patientId}`) === 'true';
+  }
+
+  async function performCheckIn() {
+    if (!state.canCheckIn) return toast("今日已簽到過囉！");
+    
+    // 增加連續登入計數
+    const newStreak = (state.stats.loginStreak || 0) + 1;
+    state.stats.loginStreak = newStreak;
+    localStorage.setItem(`login_streak_${state.patientId}`, newStreak);
+    
+    let bonus = 0;
+    if (newStreak >= 7) bonus = 10;
+    else if (newStreak >= 3) bonus = 5;
+    
+    const totalAward = 10 + bonus;
+    
+    await window.showBlockchainProgress(`正在驗證連續登入 (${newStreak} 天)...`, 2000);
+    await window.blockchain.mint(totalAward, `每日簽到獎勵 (含加成)`);
+    window.showCoinMinted(totalAward);
+    
+    const today = new Date().toISOString().split('T')[0];
+    localStorage.setItem(`last_checkin_${state.patientId}`, today);
+    state.canCheckIn = false;
+    state.web3.healBalance = window.blockchain.getBalance();
+    render();
+  }
+
+  async function redeemDiscount() {
+    const amount = 100;
+    if (state.web3.healBalance < amount) return toast("健康幣不足 100 枚 (需 100 枚折抵 10 元)");
+    
+    const ok = confirm(`確定要銷毀 ${amount} 健康幣來兌換 $10 元診斷費折抵嗎？\n此動作將寫入區塊鏈不可撤銷。`);
+    if (ok) {
+        await window.showBlockchainProgress("正在執行銷毀並生成折扣憑證...", 2500);
+        window.blockchain.burn(amount, "兌換診斷費折扣");
+        state.web3.healBalance = window.blockchain.getBalance();
+        toast("兌換成功！已折抵 10 元");
+        render();
+    }
+  }
+
   function generateMathQuiz() {
-    const a = Math.floor(Math.random() * 10) + 1;
-    const b = Math.floor(Math.random() * 10) + 1;
+    const balance = state.web3.healBalance || 0;
+    const difficulty = Math.floor(balance / 50); 
+    const max = 10 + difficulty * 10;
+    const a = Math.floor(Math.random() * max) + 1;
+    const b = Math.floor(Math.random() * max) + 1;
     const op = Math.random() > 0.5 ? '+' : '-';
     const answer = op === '+' ? a + b : a - b;
     const question = `${a} ${op} ${b} = ?`;
     let options = [answer];
     while (options.length < 3) {
-      const wrong = answer + (Math.floor(Math.random() * 5) - 2);
-      if (!options.includes(wrong)) options.push(wrong);
+      const wrong = answer + (Math.floor(Math.random() * (Math.max(10, max/2))) - Math.floor(Math.max(5, max/4)));
+      if (!options.includes(wrong) && wrong !== answer) options.push(wrong);
     }
     state.mathQuiz = { ...state.mathQuiz, question, answer, options: options.sort(() => Math.random() - 0.5) };
   }
@@ -98,6 +182,9 @@
               </p>
             </div>
             <div class="flex items-center gap-2">
+              <button data-act="reset-tasks" class="w-10 h-10 bg-red-500/10 hover:bg-red-500/20 rounded-xl flex items-center justify-center text-red-500 transition-colors border border-red-500/20" title="測試用：重置每日任務">
+                <i class="fa-solid fa-rotate-right"></i>
+              </button>
               <button data-act="toggle-theme" class="theme-toggle">
                 ${state.isDarkMode ? '🌙' : '☀️'}
               </button>
@@ -145,19 +232,66 @@
 
   function renderHome() {
     return `
-      <!-- $HEAL 卡片 -->
-      <div class="bg-gradient-to-br from-teal-500 to-teal-700 p-6 rounded-[32px] text-white shadow-lg mb-6 relative overflow-hidden group">
-        <div class="absolute -right-4 -top-4 w-32 h-32 bg-white/10 rounded-full blur-3xl"></div>
-        <div class="relative z-10 flex justify-between items-center">
+      <!-- 康復階段視覺化 -->
+      <div class="bg-white/80 backdrop-blur-xl p-6 rounded-[32px] border border-[var(--border-color)] mb-6 shadow-sm relative overflow-hidden">
+        <div class="flex justify-between items-center mb-4">
           <div>
-            <h4 class="text-[10px] font-black uppercase tracking-[0.2em] text-teal-100 mb-1">PoPW 生態系統獎勵</h4>
-            <div class="flex items-baseline gap-2">
-              <span class="text-4xl font-black tracking-tight">${state.web3.healBalance.toFixed(1)}</span>
-              <span class="text-sm font-bold text-teal-100">$HEAL</span>
+            <h4 class="text-[9px] font-black uppercase tracking-widest text-[var(--text-muted)]">目前康復階段</h4>
+            <div class="text-xl font-black text-slate-800">
+              ${state.stats.level <= 3 ? '🛏️ 臥床休養期' : (state.stats.level <= 7 ? '🪑 坐姿訓練期' : (state.stats.level <= 12 ? '🚶 站立步態期' : '🏃 活力回歸期'))}
             </div>
           </div>
-          <div class="w-14 h-14 bg-white/20 rounded-2xl flex items-center justify-center backdrop-blur-md border border-white/10 text-white">
-            <svg class="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+          <div class="text-right">
+             <div class="text-[9px] font-bold text-teal-600 uppercase">連續登入</div>
+             <div class="text-xl font-black text-teal-600">${state.stats.loginStreak} 天</div>
+          </div>
+        </div>
+        <div class="h-1.5 bg-slate-100 rounded-full overflow-hidden flex gap-1">
+          ${[0, 4, 8, 12].map(lv => `
+            <div class="h-full flex-1 transition-all duration-1000 ${state.stats.level > lv ? 'bg-teal-500 shadow-[0_0_8px_rgba(20,184,166,0.5)]' : 'bg-slate-200'}"></div>
+          `).join('')}
+        </div>
+        <div class="flex justify-between mt-2 text-[8px] font-bold text-slate-400 uppercase tracking-tighter">
+          <span>Level 1</span>
+          <span>Level 5</span>
+          <span>Level 9</span>
+          <span>Level 13+</span>
+        </div>
+      </div>
+
+      <!-- $HEAL 卡片 -->
+      <div class="bg-gradient-to-br from-slate-800 to-slate-900 p-6 rounded-[32px] text-white shadow-xl mb-6 border border-white/5 relative overflow-hidden group">
+        <div class="absolute -right-4 -top-4 w-32 h-32 bg-teal-500/10 rounded-full blur-3xl"></div>
+        <div class="relative z-10">
+          <div class="flex justify-between items-start mb-4">
+             <div>
+                <h4 class="text-[10px] font-black uppercase tracking-[0.2em] text-teal-400 mb-1 flex items-center gap-2">
+                    <span class="w-1.5 h-1.5 bg-teal-500 rounded-full animate-pulse"></span>
+                    Blockchain Wallet
+                </h4>
+                <div class="flex items-baseline gap-2">
+                  <span class="text-4xl font-black tracking-tight text-white">${Math.floor(state.web3.healBalance)}</span>
+                  <span class="text-xs font-bold text-slate-400">健康幣</span>
+                </div>
+                <div class="text-[8px] font-mono text-slate-500 mt-1 uppercase opacity-60">ID: ${window.blockchain.walletAddress}</div>
+             </div>
+             <div class="text-4xl drop-shadow-[0_0_10px_rgba(234,179,8,0.4)]">
+                <i class="fa-solid fa-coins text-yellow-500"></i>
+             </div>
+          </div>
+          
+          <div class="grid grid-cols-2 gap-3 mt-4">
+            <button data-act="daily-checkin" class="flex items-center justify-center gap-2 bg-teal-500 hover:bg-teal-400 text-white font-black py-2.5 px-4 rounded-2xl text-[10px] transition-all active:scale-95 disabled:opacity-50 disabled:bg-slate-700" ${state.canCheckIn ? '' : 'disabled'}>
+                <i class="fa-solid fa-calendar-check"></i> ${state.canCheckIn ? '領取獎勵' : '今日已領'}
+            </button>
+            <button data-act="take-meds" class="flex items-center justify-center gap-2 bg-red-500 hover:bg-red-400 text-white font-black py-2.5 px-4 rounded-2xl text-[10px] transition-all active:scale-95 disabled:opacity-50 disabled:bg-slate-700" ${state.hasTakenMeds ? 'disabled' : ''}>
+                <i class="fa-solid fa-pills"></i> ${state.hasTakenMeds ? '今日已服藥' : '每日服藥回報'}
+            </button>
+          </div>
+          <div class="grid grid-cols-1 gap-3 mt-3">
+            <button data-act="redeem-heal" class="flex items-center justify-center gap-2 bg-slate-700 hover:bg-slate-600 text-teal-300 font-black py-2.5 px-4 rounded-2xl text-[10px] border border-teal-500/20 transition-all active:scale-95">
+                <i class="fa-solid fa-ticket"></i> 兌換折扣
+            </button>
           </div>
         </div>
       </div>
@@ -184,18 +318,18 @@
               <svg class="w-6 h-6 text-teal-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" /></svg>
             </div>
             <div>
-              <h4 class="text-[9px] font-black uppercase tracking-widest text-[var(--text-muted)]">認知激發</h4>
+              <h4 class="text-[9px] font-black uppercase tracking-widest text-[var(--text-muted)]">認知激發 (${state.mathTasksCount}/3)</h4>
               <p class="text-3xl font-black">${state.mathQuiz.question}</p>
             </div>
           </div>
           <div class="text-right">
             <div class="text-[9px] font-bold text-teal-600/60 uppercase mb-0.5">預估獎勵</div>
-            <div class="text-sm font-black text-teal-600">+10 XP</div>
+            <div class="text-sm font-black text-teal-600">${state.mathTasksCount < 3 ? '+5 健康幣 / ' : ''}+100 XP</div>
           </div>
         </div>
         <div class="grid grid-cols-3 gap-3 mb-6">
           ${state.mathQuiz.options.map(o => `
-            <button data-act="math-ans" data-val="${o}" class="bg-[var(--bg-app)] hover:bg-teal-500/10 h-16 rounded-2xl font-black text-xl border border-[var(--border-color)] text-[var(--text-main)] transition-all active:scale-95">
+            <button data-act="math-ans" data-val="${o}" ${state.mathTasksCount >= 3 ? 'disabled' : ''} class="bg-[var(--bg-app)] hover:bg-teal-500/10 h-16 rounded-2xl font-black text-xl border border-[var(--border-color)] text-[var(--text-main)] transition-all active:scale-95 disabled:opacity-50 disabled:grayscale">
               ${o}
             </button>
           `).join('')}
@@ -203,11 +337,14 @@
       </div>
 
       <!-- 任務列表 -->
-      <h3 class="text-[10px] font-black text-[var(--text-muted)] uppercase tracking-[0.2em] mb-4 px-1">今日處方任務</h3>
+      <h3 class="text-[10px] font-black text-[var(--text-muted)] uppercase tracking-[0.2em] mb-4 px-1 flex justify-between items-center">
+        今日處方任務
+        <span class="text-[8px] text-teal-600 font-black tracking-widest uppercase">每項任務每日可領 1 次</span>
+      </h3>
       <div class="space-y-4 mb-6">
-        <button data-act="start-arm" class="w-full bg-[var(--bg-card)] p-6 rounded-[32px] border border-[var(--border-color)] flex justify-between items-center active:scale-95 transition-all shadow-sm hover:border-teal-500/30">
+        <button data-act="start-arm" ${state.cameraTasks.arm >= 1 ? 'disabled' : ''} class="w-full bg-[var(--bg-card)] p-6 rounded-[32px] border border-[var(--border-color)] flex justify-between items-center active:scale-95 transition-all shadow-sm hover:border-teal-500/30 disabled:opacity-50 disabled:grayscale">
           <div class="text-left">
-            <div class="font-black text-[var(--text-main)] text-lg">肩關節屈曲訓練</div>
+            <div class="font-black text-[var(--text-main)] text-lg">肩關節屈曲訓練 ${state.cameraTasks.arm >= 1 ? '(已完成)' : ''}</div>
             <div class="text-[10px] font-bold text-[var(--text-muted)] mt-1 uppercase">目標：3 次 · 達 90°</div>
           </div>
           <div class="w-12 h-12 rounded-2xl bg-teal-500/5 flex items-center justify-center text-teal-600">
@@ -215,9 +352,9 @@
           </div>
         </button>
 
-        <button data-act="start-grip" class="w-full bg-[var(--bg-card)] p-6 rounded-[32px] border border-[var(--border-color)] flex justify-between items-center active:scale-95 transition-all shadow-sm hover:border-purple-500/30">
+        <button data-act="start-grip" ${state.cameraTasks.grip >= 1 ? 'disabled' : ''} class="w-full bg-[var(--bg-card)] p-6 rounded-[32px] border border-[var(--border-color)] flex justify-between items-center active:scale-95 transition-all shadow-sm hover:border-purple-500/30 disabled:opacity-50 disabled:grayscale">
           <div class="text-left">
-            <div class="font-black text-[var(--text-main)] text-lg">手指抓握訓練</div>
+            <div class="font-black text-[var(--text-main)] text-lg">手指抓握訓練 ${state.cameraTasks.grip >= 1 ? '(已完成)' : ''}</div>
             <div class="text-[10px] font-bold text-[var(--text-muted)] mt-1 uppercase">目標：3 次 · 完整握拳</div>
           </div>
           <div class="w-12 h-12 rounded-2xl bg-purple-500/5 flex items-center justify-center text-purple-600">
@@ -225,9 +362,9 @@
           </div>
         </button>
 
-        <button data-act="start-reaction" class="w-full bg-[var(--bg-card)] p-6 rounded-[32px] border border-[var(--border-color)] flex justify-between items-center active:scale-95 transition-all shadow-sm hover:border-amber-500/30">
+        <button data-act="start-reaction" ${state.cameraTasks.reaction >= 1 ? 'disabled' : ''} class="w-full bg-[var(--bg-card)] p-6 rounded-[32px] border border-[var(--border-color)] flex justify-between items-center active:scale-95 transition-all shadow-sm hover:border-amber-500/30 disabled:opacity-50 disabled:grayscale">
           <div class="text-left">
-            <div class="font-black text-[var(--text-main)] text-lg">眼手協調訓練</div>
+            <div class="font-black text-[var(--text-main)] text-lg">眼手協調訓練 ${state.cameraTasks.reaction >= 1 ? '(已完成)' : ''}</div>
             <div class="text-[10px] font-bold text-[var(--text-muted)] mt-1 uppercase">目標：捕捉 10 個目標</div>
           </div>
           <div class="w-12 h-12 rounded-2xl bg-amber-500/5 flex items-center justify-center text-amber-600">
@@ -254,17 +391,17 @@
         ` : ''}
         <div class="absolute top-6 left-6 right-6 flex justify-between z-10 pointer-events-none">
           <div class="bg-[var(--bg-card)]/90 backdrop-blur-xl p-4 rounded-3xl border border-[var(--border-color)] shadow-xl min-w-[110px]">
-            <div class="text-[9px] font-black text-teal-600 uppercase tracking-widest">數據監控</div>
-            <div id="stat-val" class="text-2xl font-black text-[var(--text-main)]">${isReaction ? '計時中' : (state.taskMode === 'arm' ? state.arm.angle + '°' : state.grip.score + '%')}</div>
+            <div class="text-[9px] font-black text-white uppercase tracking-widest">數據監控</div>
+            <div id="stat-val" class="text-2xl font-black text-white text-[var(--text-main)]">${isReaction ? '計時中' : (state.taskMode === 'arm' ? state.arm.angle + '°' : state.grip.score + '%')}</div>
           </div>
           <div class="bg-[var(--bg-card)]/90 backdrop-blur-xl p-4 rounded-3xl border border-[var(--border-color)] shadow-xl text-right min-w-[110px]">
-            <div class="text-[9px] font-black text-teal-600 uppercase tracking-widest">完成度</div>
-            <div id="stat-reps" class="text-2xl font-black text-[var(--text-main)]">${isReaction ? state.reaction.score + '/10' : (state.taskMode === 'arm' ? state.arm.reps : state.grip.reps) + '/' + state.targetReps}</div>
+            <div class="text-[9px] font-black text-white uppercase tracking-widest">完成度</div>
+            <div id="stat-reps" class="text-2xl text-white font-black text-[var(--text-main)]">${isReaction ? state.reaction.score + '/10' : (state.taskMode === 'arm' ? state.arm.reps : state.grip.reps) + '/' + state.targetReps}</div>
           </div>
         </div>
         <div class="absolute bottom-8 left-6 right-6 flex gap-3 z-10">
           <button data-act="cancel-task" class="flex-1 bg-white/20 backdrop-blur-xl text-white font-bold py-4 rounded-2xl border border-white/30 text-[10px]">中斷</button>
-          <button data-act="complete-task" class="flex-1 bg-teal-500 text-white font-black py-4 rounded-3xl shadow-lg active:scale-95 transition-all text-[10px]">上傳驗證</button>
+          <button data-act="complete-task" class="flex-1 bg-teal-500 text-white scale-0 font-black py-4 rounded-3xl shadow-lg active:scale-95 transition-all text-[10px]">上傳驗證</button>
         </div>
       </div>
     `;
@@ -304,29 +441,44 @@
   }
 
   function renderDataView() {
+    const blockchainHistory = window.blockchain.getFormattedHistory();
     const avgROM = state.history.length ? Math.round(state.history.reduce((a, b) => a + b.rom, 0) / state.history.length) : 0;
+    
     return `
       <div class="space-y-6 text-[var(--text-main)]">
         <div class="bg-[var(--bg-card)] p-6 rounded-3xl shadow-sm border border-[var(--border-color)]">
-          <h3 class="text-[10px] font-black text-[var(--text-muted)] uppercase tracking-[0.2em] mb-6 px-1">復健進度概覽</h3>
+          <h3 class="text-[10px] font-black text-[var(--text-muted)] uppercase tracking-[0.2em] mb-6 px-1">復健數據概覽</h3>
           <div class="grid grid-cols-2 gap-4 text-center">
             <div class="p-4 bg-[var(--bg-app)] rounded-2xl border border-[var(--border-color)]">
               <div class="text-[9px] font-bold text-[var(--text-muted)] uppercase mb-1">平均角度</div>
               <div class="text-2xl font-black text-teal-600">${avgROM}°</div>
             </div>
             <div class="p-4 bg-[var(--bg-app)] rounded-2xl border border-[var(--border-color)]">
-              <div class="text-[9px] font-bold text-[var(--text-muted)] uppercase mb-1">總次數</div>
-              <div class="text-2xl font-black text-purple-600">${state.history.length}</div>
+              <div class="text-[9px] font-bold text-[var(--text-muted)] uppercase mb-1">錢包地址</div>
+              <div class="text-[8px] font-mono font-black text-slate-500 overflow-hidden text-ellipsis">${window.blockchain.walletAddress}</div>
             </div>
           </div>
         </div>
+
         <div class="bg-[var(--bg-card)] p-6 rounded-3xl shadow-sm border border-[var(--border-color)]">
-          <h3 class="text-[10px] font-black text-[var(--text-muted)] uppercase tracking-[0.2em] mb-4 px-1">區塊鏈鏈上紀錄</h3>
-          <div class="space-y-3">
-            ${state.history.slice().reverse().map(h => `
-              <div class="flex justify-between items-center p-4 hover:bg-[var(--bg-app)] rounded-2xl transition-colors border border-transparent hover:border-[var(--border-color)]">
-                <div><div class="text-sm font-bold">${h.date}</div><div class="text-[9px] text-[var(--text-muted)] uppercase">${h.task}</div></div>
-                <div class="text-right"><div class="text-sm font-black text-teal-600">${h.rom}°</div><div class="text-[8px] font-mono text-[var(--text-muted)] uppercase">POPW 已驗證</div></div>
+          <h3 class="text-[10px] font-black text-[var(--text-muted)] uppercase tracking-[0.2em] mb-4 px-1 flex justify-between items-center">
+            區塊鏈帳本 (History)
+            <span class="text-[8px] text-teal-500 lowercase font-mono">Total Blocks: ${blockchainHistory.length}</span>
+          </h3>
+          <div class="space-y-4">
+            ${blockchainHistory.map(b => `
+              <div class="relative pl-6 border-l-2 ${b.data.type === 'MINT' ? 'border-teal-500/30' : 'border-red-500/30'} py-2">
+                <div class="absolute -left-[9px] top-4 w-4 h-4 rounded-full ${b.data.type === 'MINT' ? 'bg-teal-500' : 'bg-red-500'} border-4 border-[var(--bg-card)]"></div>
+                <div class="flex justify-between items-start mb-1">
+                  <div class="text-sm font-black">${b.data.task}</div>
+                  <div class="text-[10px] font-black ${b.data.type === 'MINT' ? 'text-teal-600' : 'text-red-500'}">
+                    ${b.data.type === 'MINT' ? '+' : '-'}${b.data.amount} <i class="fa-solid fa-coins ml-0.5"></i>
+                  </div>
+                </div>
+                <div class="flex justify-between items-center text-[8px] font-mono text-[var(--text-muted)] uppercase">
+                  <span>HASH: ${b.hash.slice(0, 16)}...</span>
+                  <span>${b.dateLabel} ${b.timeLabel}</span>
+                </div>
               </div>
             `).join('')}
           </div>
@@ -462,11 +614,29 @@
   async function submitPoPW() {
     state.web3.isVerifying = true; render();
     try {
-      const result = await healscapeApi.submitPoPW({ patientId: state.patientId, task: state.taskMode, reps: state.lastSession.reps, rom: state.lastSession.rom });
-      if (result.success) {
-        state.web3.healBalance += result.reward; state.web3.lastTxHash = result.txHash; state.lastSession.reward = result.reward;
-        sessionStorage.setItem(`heal_bal_${state.patientId}`, state.web3.healBalance); toast(`PoPW 驗證成功！`);
+      await window.showBlockchainProgress("正在透過 AI 驗證復健動作...", 3500);
+      const taskLabel = state.taskMode === 'arm' ? '肩關節訓練' : (state.taskMode === 'grip' ? '抓握訓練' : '眼手協調訓練');
+      
+      let reward = 0;
+      const currentTaskCount = state.cameraTasks[state.taskMode] || 0;
+      
+      if (currentTaskCount < 1) {
+        reward = 5;
+        const block = await window.blockchain.mint(reward, `完成每日任務：${taskLabel}`);
+        state.web3.lastTxHash = block.hash;
+        
+        state.cameraTasks[state.taskMode] = 1;
+        localStorage.setItem(`task_count_${state.taskMode}_${state.patientId}`, '1');
+        
+        window.showCoinMinted(reward);
+        toast(`區塊鏈驗證成功！+${reward} 健康幣`);
+      } else {
+        toast(`今日此任務獎勵已領取，本次僅記錄數據`);
+        state.web3.lastTxHash = "DATA_ONLY_" + Date.now();
       }
+      
+      state.web3.healBalance = window.blockchain.getBalance();
+      state.lastSession.reward = reward;
     } catch (e) { toast("同步失敗"); } finally { state.web3.isVerifying = false; render(); }
   }
 
@@ -474,7 +644,32 @@
     document.addEventListener('click', async (e) => {
       const t = e.target.closest('[data-act]'); if (!t) return;
       const act = t.dataset.act;
-      if (act === 'toggle-theme') {
+      if (act === 'reset-tasks') {
+        localStorage.removeItem(`tasks_date_${state.patientId}`);
+        localStorage.removeItem(`math_tasks_count_${state.patientId}`);
+        localStorage.removeItem(`task_count_arm_${state.patientId}`);
+        localStorage.removeItem(`task_count_grip_${state.patientId}`);
+        localStorage.removeItem(`task_count_reaction_${state.patientId}`);
+        localStorage.removeItem(`has_taken_meds_${state.patientId}`);
+        localStorage.removeItem(`last_checkin_${state.patientId}`);
+        localStorage.removeItem(`login_streak_${state.patientId}`);
+        state.stats.loginStreak = 0;
+        checkDailyLimits();
+        checkDailyCheckIn();
+        toast("測試用：所有記錄含連續登入已重置！");
+        render();
+      }
+ else if (act === 'take-meds') {
+        if (state.hasTakenMeds) return;
+        await window.showBlockchainProgress("正在記錄每日用藥情況...", 2000);
+        await window.blockchain.mint(10, "每日服藥獎勵");
+        state.hasTakenMeds = true;
+        localStorage.setItem(`has_taken_meds_${state.patientId}`, 'true');
+        state.web3.healBalance = window.blockchain.getBalance();
+        window.showCoinMinted(10);
+        toast("服藥記錄成功！+10 健康幣");
+        render();
+      } else if (act === 'toggle-theme') {
         state.isDarkMode = !state.isDarkMode; document.body.classList.toggle('dark-mode', state.isDarkMode);
         localStorage.setItem('theme', state.isDarkMode ? 'dark' : 'light'); render();
       } else if (act.startsWith('start-')) {
@@ -498,12 +693,31 @@
         const earnedXp = reps * 100;
         await healscapeApi.uploadSession({ patientId: state.patientId, task: state.taskMode, rom: maxVal, reps: reps, date: new Date().toISOString().split('T')[0] });
         stopEngine(); state.lastSession = { xp: earnedXp, rom: maxVal, reps: reps }; state.taskStep = 'result'; render(); submitPoPW();
+      } else if (act === 'redeem-heal') {
+        redeemDiscount();
+      } else if (act === 'daily-checkin') {
+        performCheckIn();
       } else if (act === 'finish-result') { gainXp(state.lastSession.xp); state.taskStep = 'idle'; generateMathQuiz(); render(); }
       else if (act === 'cancel-task') { stopEngine(); state.taskStep = 'idle'; render(); }
       else if (act.startsWith('nav-')) { state.currentView = act.replace('nav-', ''); render(); }
       else if (act === 'math-ans') {
         const isCorrect = parseInt(t.dataset.val) === state.mathQuiz.answer;
-        if (isCorrect) { state.mathQuiz.streak++; gainXp(100); toast("答對了！+100 XP"); }
+        if (isCorrect) { 
+          state.mathQuiz.streak++; 
+          gainXp(100); 
+          let msg = "答對了！+100 XP";
+          if (state.mathTasksCount < 3) {
+            state.mathTasksCount++;
+            localStorage.setItem(`math_tasks_count_${state.patientId}`, state.mathTasksCount);
+            await window.blockchain.mint(5, "認知激發任務獎勵");
+            state.web3.healBalance = window.blockchain.getBalance();
+            window.showCoinMinted(5);
+            msg += " & +5 健康幣";
+          } else {
+            msg += " (今日獎勵已達上限)";
+          }
+          toast(msg); 
+        }
         else { state.mathQuiz.streak = 0; toast("答錯了"); }
         setTimeout(() => { generateMathQuiz(); render(); }, 300);
       }

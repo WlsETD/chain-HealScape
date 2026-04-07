@@ -2,13 +2,13 @@ const auth = {
   login(email, password) {
     if (password !== '1234') return false;
 
-    if (email === 'doctor@test.com') {
+    if (email === 'doctor') {
       sessionStorage.setItem('userRole', 'therapist');
       sessionStorage.setItem('userId', 'doctor01');
       sessionStorage.setItem('userEmail', email);
       window.location.href = 'therapist.html';
       return true;
-    } else if (email === 'test@test.com') {
+    } else if (email === 'test') {
       sessionStorage.setItem('userRole', 'patient');
       sessionStorage.setItem('userId', 'patient01');
       sessionStorage.setItem('userEmail', email);

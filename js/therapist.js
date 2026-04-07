@@ -132,6 +132,13 @@
 
   function renderPatientDetails(p) {
     if (!p) return '';
+    
+    // 競賽 Demo 邏輯：如果是第一位病患，顯示真實區塊鏈數據
+    const isMainPatient = p.id === 'p01';
+    const displayBalance = isMainPatient ? window.blockchain.getBalance() : p.healBal;
+    const displayHistory = isMainPatient ? window.blockchain.getFormattedHistory() : [];
+    const walletAddr = isMainPatient ? window.blockchain.walletAddress : p.wallet;
+
     return `
       <div class="fixed inset-x-0 bottom-0 bg-[var(--bg-card)] rounded-t-[40px] shadow-2xl z-20 border-t border-[var(--border-color)] animate-slide-up h-[90%] flex flex-col">
         <div class="w-12 h-1.5 bg-slate-500/20 rounded-full mx-auto mt-4 mb-6 shrink-0"></div>
@@ -140,7 +147,7 @@
             <div>
               <div class="flex items-center gap-2 mb-1">
                 <span class="text-[9px] font-black text-teal-600 bg-teal-500/10 px-2 py-0.5 rounded-full border border-teal-500/20 uppercase tracking-widest">On-Chain Verified</span>
-                <span class="text-[9px] font-mono text-[var(--text-muted)]">${p.wallet}</span>
+                <span class="text-[9px] font-mono text-[var(--text-muted)]">${walletAddr}</span>
               </div>
               <h3 class="text-2xl font-black text-[var(--text-main)]">${maskName(p.name)} 臨床詳情報告</h3>
             </div>
@@ -149,15 +156,42 @@
             </button>
           </div>
 
-          <!-- Web3 卡片區 -->
+          <!-- Web3 區塊鏈資產卡片 -->
           <div class="grid grid-cols-2 gap-4 mb-6">
-            <div class="bg-gradient-to-br from-teal-500 to-teal-600 p-5 rounded-3xl text-white shadow-lg">
-              <div class="text-[10px] font-bold text-teal-100 uppercase tracking-wider mb-1">HEAL 餘額</div>
-              <div class="text-3xl font-black">${(p.healBal || 0).toFixed(1)} <span class="text-sm font-bold text-teal-100">$HEAL</span></div>
+            <div class="bg-gradient-to-br from-slate-800 to-slate-900 p-5 rounded-3xl text-white shadow-lg border border-white/5">
+              <div class="text-[10px] font-bold text-teal-400 uppercase tracking-wider mb-2 flex items-center gap-1.5">
+                <i class="fa-solid fa-coins text-yellow-500"></i> 健康幣資產
+              </div>
+              <div class="text-3xl font-black">${Math.floor(displayBalance)} <span class="text-xs font-bold text-slate-400">COINS</span></div>
             </div>
-            <div class="bg-slate-900 p-5 rounded-3xl text-white">
-              <div class="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">同步等級</div>
-              <div class="text-3xl font-black">LVL ${p.level}</div>
+            <div class="bg-slate-100 dark:bg-slate-800 p-5 rounded-3xl text-[var(--text-main)] border border-[var(--border-color)]">
+              <div class="text-[10px] font-bold text-[var(--text-muted)] uppercase tracking-wider mb-2">同步等級</div>
+              <div class="text-3xl font-black text-teal-600">LVL ${p.level}</div>
+            </div>
+          </div>
+
+          <!-- 區塊鏈健康成就時間軸 -->
+          <div class="mb-8">
+            <h4 class="text-[10px] font-black text-[var(--text-muted)] uppercase tracking-widest mb-4 flex justify-between items-center">
+                PoPW 區塊鏈成就時間軸
+                <i class="fa-solid fa-link text-teal-500"></i>
+            </h4>
+            <div class="space-y-3">
+              ${isMainPatient ? displayHistory.map(b => `
+                <div class="bg-[var(--bg-app)] border border-[var(--border-color)] p-4 rounded-2xl relative overflow-hidden group">
+                  <div class="absolute left-0 top-0 bottom-0 w-1 ${b.data.type === 'MINT' ? 'bg-teal-500' : 'bg-red-500'}"></div>
+                  <div class="flex justify-between items-start mb-1">
+                    <div class="text-[11px] font-black">${b.data.task}</div>
+                    <div class="text-[10px] font-mono text-teal-500 font-bold">${b.data.type === 'MINT' ? '+' : '-'}${b.data.amount}</div>
+                  </div>
+                  <div class="flex justify-between items-center">
+                    <div class="text-[8px] font-mono text-slate-500">BLOCK: ${b.hash.slice(0, 20)}...</div>
+                    <div class="text-[8px] text-slate-400 font-bold">${b.dateLabel}</div>
+                  </div>
+                </div>
+              `).join('') : `
+                <div class="text-center py-6 text-slate-400 text-xs italic">無區塊鏈同步紀錄</div>
+              `}
             </div>
           </div>
 
@@ -192,25 +226,6 @@
                 <span class="text-[8px] bg-teal-500/10 text-teal-600 px-2 py-1 rounded-full border border-teal-500/20 font-bold uppercase">PoPW Verified</span>
                 <span class="text-[8px] bg-slate-500/10 text-[var(--text-muted)] px-2 py-1 rounded-full border border-[var(--border-color)] font-bold uppercase">ZK-BioOracle</span>
               </div>
-            </div>
-          </div>
-
-          <!-- PoPW 鏈上日誌 -->
-          <div class="mb-10">
-            <h4 class="text-[10px] font-black text-[var(--text-muted)] uppercase tracking-widest mb-4">PoPW 鏈上驗證紀錄</h4>
-            <div class="space-y-2">
-              ${[1, 2, 3].map(i => `
-                <div class="bg-[var(--bg-app)] border border-[var(--border-color)] p-3 rounded-2xl flex justify-between items-center">
-                  <div class="flex items-center gap-3">
-                    <div class="w-8 h-8 bg-teal-500/10 rounded-xl flex items-center justify-center text-teal-600 text-xs">✓</div>
-                    <div>
-                      <div class="text-[10px] font-black">TX: 0x${Math.random().toString(16).slice(2, 10)}...</div>
-                      <div class="text-[8px] text-[var(--text-muted)] uppercase">Validated via ZK-Proof</div>
-                    </div>
-                  </div>
-                  <div class="text-[10px] font-black text-teal-600 uppercase">Confirmed</div>
-                </div>
-              `).join('')}
             </div>
           </div>
 
